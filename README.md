@@ -43,6 +43,24 @@ claudectl cancel  [--id ID]
 claudectl list
 ```
 
+### Background runs
+
+`run`, `review` and `resume` block by default. Add `--background` and the command
+returns immediately with a run id; when the work finishes, the outcome is queued
+back into the calling Codex session with `codex queue`, so Codex keeps working
+meanwhile and still learns when the run ended:
+
+```
+claudectl review --cwd . --background
+started in the background: myrepo-20260905-182720
+watch:  claudectl status --id myrepo-20260905-182720
+a message will be queued to this Codex session when it ends
+```
+
+The completion message needs `CODEX_THREAD_ID`, which Codex sets for the commands
+it runs. Started from a plain shell, the run still works — it just has nobody to
+notify, and says so.
+
 Each run is stored under `~/.codex/claude-runs/<id>/`: the prompt, the event log, run metadata. Every finished run reports what it cost in dollars, taken from Claude's own result event.
 
 ### Which run a command acts on

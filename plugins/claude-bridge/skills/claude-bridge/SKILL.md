@@ -21,9 +21,9 @@ All of that is handled inside `claudectl`. If a needed mode seems to be missing,
 ## Modes
 
 ```
-claudectl run     --cwd DIR (--prompt TEXT | --prompt-file F) [--model M]
-claudectl review  --cwd DIR [--base REF] [--prompt TEXT] [--model M]
-claudectl resume  --id ID (--prompt TEXT | --prompt-file F)
+claudectl run     --cwd DIR (--prompt TEXT | --prompt-file F) [--model M] [--background]
+claudectl review  --cwd DIR [--base REF] [--prompt TEXT] [--model M] [--background]
+claudectl resume  --id ID (--prompt TEXT | --prompt-file F) [--background]
 claudectl status  [--id ID]
 claudectl result  [--id ID]
 claudectl cancel  [--id ID]
@@ -34,7 +34,11 @@ Without `--id`, commands act on the newest run started by this Codex thread, fal
 
 ## How to launch
 
-`run`, `review` and `resume` block until the work is finished. Launch them in the background and keep working; never detach them with `nohup`, `&` or `disown`, or the run becomes invisible: no completion signal, no status, and both sides wait on something that finished long ago.
+By default `run`, `review` and `resume` block until the work is finished. A review of a large change or a substantial task takes minutes, and blocking means you sit idle for all of them.
+
+Add **`--background`** in that case. The command returns at once with the run id, the work continues detached, and when it ends a message is queued back into this Codex session through `codex queue`, so you learn the outcome without polling. Use it for anything you expect to run longer than a minute; keep the blocking form for short tasks where the answer is the next thing you need.
+
+Never detach a run yourself with `nohup`, `&` or `disown`. That produces the same waiting but without the reporting: no completion message, no visible status. `--background` detaches too, but the run keeps reporting for itself.
 
 While a run is in flight, answer "how is it doing" with `claudectl status` — it reports the state, the time since the last event, and the latest steps, including any permission denials. Do not guess.
 
@@ -61,7 +65,7 @@ DONE does not mean "did the work": Claude can finish normally while reporting th
 ## Do not
 
 - Invoke `claude` directly or improvise flags.
-- Detach a run with `nohup` / `&` / `disown`.
+- Detach a run with `nohup` / `&` / `disown` — use `--background` instead.
 - Commit or push Claude's work without being asked.
 - Delegate on your own initiative when the user's instructions do not call for it.
 - Report "done" without looking at the changes.

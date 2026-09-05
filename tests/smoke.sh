@@ -22,6 +22,7 @@ check "run without a prompt is rejected" 2 bash "$CTL" run --cwd "$HOME"
 check "missing directory is rejected"    2 bash "$CTL" run --cwd /no/such/path --prompt x
 check "/tmp is rejected with a reason"   2 bash "$CTL" run --cwd /tmp --prompt x
 check "unknown run id is rejected"       2 bash "$CTL" status --id no-such-run
+check "--background is a known flag"      2 bash "$CTL" run --cwd "$HOME" --background
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/runs" "$TMP/projA" "$TMP/projB"

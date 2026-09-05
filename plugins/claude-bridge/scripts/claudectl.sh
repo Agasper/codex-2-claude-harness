@@ -3,6 +3,7 @@
 # Every claude flag is baked in here. Callers only get the modes below.
 set -uo pipefail
 
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 RUNS_DIR="${CLAUDE_RUNS_DIR:-$HOME/.codex/claude-runs}"
 STALL_SECONDS="${CLAUDE_STALL_SECONDS:-180}"
 
@@ -12,14 +13,18 @@ usage() {
   cat <<'USAGE'
 claudectl — run Claude Code through a fixed set of modes.
 
-  claudectl run     --cwd DIR (--prompt TEXT | --prompt-file F) [--model M]
-      Task with edit access. Blocks until done — run it in the background.
+  claudectl run     --cwd DIR (--prompt TEXT | --prompt-file F) [--model M] [--background]
+      Task with edit access.
 
-  claudectl review  --cwd DIR [--base REF] [--prompt TEXT] [--model M]
-      Review with no command execution at all. Blocks until done.
+  claudectl review  --cwd DIR [--base REF] [--prompt TEXT] [--model M] [--background]
+      Review with no command execution at all.
 
-  claudectl resume  --id ID (--prompt TEXT | --prompt-file F)
-      Follow-up in the same Claude session. Blocks until done.
+  claudectl resume  --id ID (--prompt TEXT | --prompt-file F) [--background]
+      Follow-up in the same Claude session.
+
+  --background returns immediately and queues a message back into the calling
+  Codex session when the run ends, so Codex keeps working meanwhile. Without it
+  the command blocks until the run is finished.
 
   claudectl status  [--id ID]      Run state: running / silent / done / failed.
   claudectl result  [--id ID]      Outcome: Claude's answer, cost, what changed.
@@ -143,6 +148,21 @@ print(val)
 " "$1" "$2" 2>/dev/null
 }
 
+# Tells the calling Codex session that a background run has ended. Without a
+# thread id (claudectl started outside Codex) there is nobody to notify, and the
+# outcome is simply left in the run directory.
+notify_codex() {
+  local RUN="$1" state="$2" id; id=$(basename "$RUN")
+  [ -n "${CODEX_THREAD_ID:-}" ] || return 0
+  command -v codex >/dev/null 2>&1 || return 0
+  local cost changes
+  cost=$(json_get "$RUN/meta.json" cost_usd)
+  changes=$(summarize_changes "$RUN")
+  codex queue --thread "$CODEX_THREAD_ID" --message \
+    "claudectl: run $id finished — $state${cost:+, cost \$$cost}. ${changes}. See: claudectl result --id $id" \
+    >/dev/null 2>&1 || echo "note: could not queue a message to Codex thread $CODEX_THREAD_ID" >&2
+}
+
 # ---------- core: a single run ----------
 
 # execute_run <run_dir> <cwd> <mode> <prompt_file> <model> <resume_session|"">
@@ -230,10 +250,40 @@ summarize_changes() {
   echo "changes: $dirty uncommitted file(s), $commits new commit(s) since ${BASE:-—}"
 }
 
+# Starts the run detached and returns at once. Detaching is only acceptable
+# because the run still reports for itself: progress goes to the run directory,
+# claudectl status reads it, and notify_codex queues the outcome back.
+detach() {
+  local RUN="$1" CWD="$2" MODE="$3" MODEL="$4" RESUME="$5" id
+  id=$(basename "$RUN")
+  # setsid exists on Linux but not on macOS, where nohup does the same job.
+  if command -v setsid >/dev/null 2>&1; then
+    ( setsid "$SELF" __background "$RUN" "$CWD" "$MODE" "$MODEL" "$RESUME" \
+        >"$RUN/console.log" 2>&1 & ) 2>/dev/null
+  else
+    ( nohup "$SELF" __background "$RUN" "$CWD" "$MODE" "$MODEL" "$RESUME" \
+        >"$RUN/console.log" 2>&1 & ) 2>/dev/null
+  fi
+  echo "started in the background: $id"
+  echo "watch:  claudectl status --id $id"
+  echo "result: claudectl result --id $id"
+  if [ -n "${CODEX_THREAD_ID:-}" ]; then
+    echo "a message will be queued to this Codex session when it ends"
+  else
+    echo "note: CODEX_THREAD_ID is not set, so no completion message will be sent"
+  fi
+}
+
+cmd_background() {
+  local RUN="$1" CWD="$2" MODE="$3" MODEL="$4" RESUME="$5"
+  execute_run "$RUN" "$CWD" "$MODE" "$RUN/prompt.md" "$MODEL" "$RESUME"
+  notify_codex "$RUN" "$(json_get "$RUN/meta.json" state)"
+}
+
 # ---------- modes ----------
 
 cmd_run() {
-  local CWD="" PROMPT="" PROMPT_FILE="" MODEL="" MODE="run" BASE=""
+  local CWD="" PROMPT="" PROMPT_FILE="" MODEL="" MODE="run" BASE="" BACKGROUND="no"
   while [ $# -gt 0 ]; do
     case "$1" in
       --cwd) CWD="$2"; shift 2;;
@@ -242,6 +292,7 @@ cmd_run() {
       --model) MODEL="$2"; shift 2;;
       --base) BASE="$2"; shift 2;;
       --readonly) MODE="review"; shift;;
+      --background) BACKGROUND="yes"; shift;;
       *) die "unknown flag: $1 (see claudectl --help)";;
     esac
   done
@@ -290,15 +341,20 @@ cmd_run() {
 
   echo "run $ID | mode ${MODE} | model ${MODEL:-<default>} | project $CWD"
   [ -n "$TAG" ] && echo "rollback tag: $TAG"
+  if [ "$BACKGROUND" = "yes" ]; then
+    detach "$RUN" "$CWD" "$MODE" "$MODEL" ""
+    return 0
+  fi
   echo "---"
   execute_run "$RUN" "$CWD" "$MODE" "$RUN/prompt.md" "$MODEL" ""
 }
 
 cmd_resume() {
-  local ID="" PROMPT="" PROMPT_FILE="" MODEL=""
+  local ID="" PROMPT="" PROMPT_FILE="" MODEL="" BACKGROUND="no"
   while [ $# -gt 0 ]; do
     case "$1" in
       --id) ID="$2"; shift 2;;
+      --background) BACKGROUND="yes"; shift;;
       --model) MODEL="$2"; shift 2;;
       --prompt) PROMPT="$2"; shift 2;;
       --prompt-file) PROMPT_FILE="$2"; shift 2;;
@@ -323,6 +379,10 @@ cmd_resume() {
            started_at "$(date +%s)" state starting parent "$(basename "$OLD")" \
            thread_id "${CODEX_THREAD_ID:-}" session_id "$SID"
   echo "follow-up $NEW_ID | Claude session $SID | project $CWD"
+  if [ "$BACKGROUND" = "yes" ]; then
+    detach "$RUN" "$CWD" "run" "$MODEL" "$SID"
+    return 0
+  fi
   echo "---"
   execute_run "$RUN" "$CWD" "run" "$RUN/prompt.md" "$MODEL" "$SID"
 }
@@ -419,6 +479,7 @@ case "${1:-}" in
   result) shift; cmd_result "$@";;
   cancel) shift; cmd_cancel "$@";;
   list)   shift; cmd_list "$@";;
+  __background) shift; cmd_background "$@";;
   -h|--help|help|"") usage;;
   *) die "unknown mode: $1";;
 esac
