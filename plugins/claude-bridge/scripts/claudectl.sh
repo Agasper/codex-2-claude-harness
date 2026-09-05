@@ -253,16 +253,20 @@ cmd_run() {
     /tmp|/tmp/*|/private/tmp|/private/tmp/*) die "Claude Code refuses to work under /tmp (path is outside allowed working directories) — use a directory under your home";;
   esac
 
+  # Validate everything before creating anything: a rejected invocation must not
+  # leave an empty run directory behind.
+  if [ -n "$PROMPT_FILE" ]; then
+    [ -f "$PROMPT_FILE" ] || die "no such file: $PROMPT_FILE"
+  elif [ -z "$PROMPT" ]; then
+    die "--prompt or --prompt-file is required"
+  fi
+
   local ID RUN
   ID="$(basename "$CWD")-$(date +%Y%m%d-%H%M%S)"
   RUN="$RUNS_DIR/$ID"; mkdir -p "$RUN"
 
-  if [ -n "$PROMPT_FILE" ]; then
-    [ -f "$PROMPT_FILE" ] || die "no such file: $PROMPT_FILE"
-    cp "$PROMPT_FILE" "$RUN/prompt.md"
-  elif [ -n "$PROMPT" ]; then
-    printf '%s\n' "$PROMPT" > "$RUN/prompt.md"
-  else die "--prompt or --prompt-file is required"; fi
+  if [ -n "$PROMPT_FILE" ]; then cp "$PROMPT_FILE" "$RUN/prompt.md"
+  else printf '%s\n' "$PROMPT" > "$RUN/prompt.md"; fi
 
   if [ "$MODE" = "review" ]; then
     local target="the uncommitted changes"
