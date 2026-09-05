@@ -1,0 +1,11 @@
+{
+  "name": "codex-2-claude-harness",
+  "owner": { "name": "Agasper" },
+  "plugins": [
+    {
+      "name": "claude-bridge",
+      "source": "./plugins/claude-bridge",
+      "description": "Delegate work to Claude Code from Codex: fixed launch modes, live status, result acceptance, reviews and follow-ups"
+    }
+  ]
+}

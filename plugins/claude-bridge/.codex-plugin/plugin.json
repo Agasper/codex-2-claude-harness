@@ -1,0 +1,7 @@
+{
+  "name": "claude-bridge",
+  "version": "1.0.0",
+  "description": "Delegate work to Claude Code from Codex: fixed launch modes, live status, result acceptance, reviews and follow-ups",
+  "author": { "name": "Agasper" },
+  "skills": "./skills/"
+}
