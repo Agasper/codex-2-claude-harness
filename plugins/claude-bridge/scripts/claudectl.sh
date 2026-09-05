@@ -256,14 +256,21 @@ summarize_changes() {
 detach() {
   local RUN="$1" CWD="$2" MODE="$3" MODEL="$4" RESUME="$5" id
   id=$(basename "$RUN")
-  # setsid exists on Linux but not on macOS, where nohup does the same job.
-  if command -v setsid >/dev/null 2>&1; then
-    ( setsid "$SELF" __background "$RUN" "$CWD" "$MODE" "$MODEL" "$RESUME" \
-        >"$RUN/console.log" 2>&1 & ) 2>/dev/null
-  else
-    ( nohup "$SELF" __background "$RUN" "$CWD" "$MODE" "$MODEL" "$RESUME" \
-        >"$RUN/console.log" 2>&1 & ) 2>/dev/null
-  fi
+  # The run must survive the death of its caller. nohup is not enough: Codex kills
+  # the whole process group of a finished command, which killed detached runs
+  # before they ever launched Claude (observed 2026-09-05: meta.json written,
+  # run.jsonl never created). start_new_session puts the child in its own session
+  # and process group, out of reach of that kill, and works on macOS where the
+  # setsid binary does not exist.
+  python3 - "$SELF" "$RUN" "$CWD" "$MODE" "$MODEL" "$RESUME" <<'SPAWN'
+import os, subprocess, sys
+self_, run = sys.argv[1], sys.argv[2]
+log = open(os.path.join(run, "console.log"), "a")
+subprocess.Popen([self_, "__background"] + sys.argv[2:],
+                 stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                 start_new_session=True, close_fds=True)
+SPAWN
+
   echo "started in the background: $id"
   echo "watch:  claudectl status --id $id"
   echo "result: claudectl result --id $id"
