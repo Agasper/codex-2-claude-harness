@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
+# Run from a copy held in memory. bash otherwise reads a script in chunks as it
+# executes, so saving an edit during a long run shifts the bytes it has not read
+# yet and the run dies with a syntax error — with the work already done and its
+# result thrown away. Verified 2026-09-14: wrapping the body in a function or in
+# a brace group does NOT prevent this; re-exec does.
+if [ -z "${CLAUDECTL_INLINED:-}" ]; then
+  CLAUDECTL_INLINED=1 exec bash -c "$(cat "$0")" "$0" "$@"
+fi
 # claudectl — the single entry point for running Claude Code from Codex.
 # Every claude flag is baked in here. Callers only get the modes below.
 set -uo pipefail
 
-SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 RUNS_DIR="${CLAUDE_RUNS_DIR:-$HOME/.codex/claude-runs}"
 STALL_SECONDS="${CLAUDE_STALL_SECONDS:-180}"
 
@@ -234,9 +242,17 @@ execute_run() {
     incomplete) echo "OUTCOME: Claude was cut off before producing a result. Tail of err.log:"; tail -5 "$RUN/err.log" ;;
   esac
   [ -n "$cost" ] && echo "cost: \$$cost over ${turns:-?} turn(s)"
-  summarize_changes "$RUN"
+  # Everything past this point is reporting. Its failure must not turn a finished
+  # run into a reported failure: the verdict belongs to the run, not to the last
+  # command that happened to execute.
+  summarize_changes "$RUN" || true
   echo "run id: $(basename "$RUN")"
-  [ "$state" = "done" ] && return 0 || return 1
+  if [ "$state" = "done" ]; then
+    echo "VERDICT: success"
+    return 0
+  fi
+  echo "VERDICT: failed ($state, exit $code)"
+  return 1
 }
 
 summarize_changes() {
@@ -266,9 +282,12 @@ detach() {
 import os, subprocess, sys
 self_, run = sys.argv[1], sys.argv[2]
 log = open(os.path.join(run, "console.log"), "a")
+# Drop the re-exec guard: the child must re-read itself into memory too, and it
+# is the long-lived one that an edit would otherwise corrupt.
+env = {k: v for k, v in os.environ.items() if k != "CLAUDECTL_INLINED"}
 subprocess.Popen([self_, "__background"] + sys.argv[2:],
                  stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                 start_new_session=True, close_fds=True)
+                 start_new_session=True, close_fds=True, env=env)
 SPAWN
 
   echo "started in the background: $id"
@@ -478,6 +497,7 @@ cmd_list() {
 }
 
 # ---------- dispatch ----------
+main() {
 case "${1:-}" in
   run)    shift; cmd_run "$@";;
   review) shift; cmd_run --readonly "$@";;
@@ -490,3 +510,6 @@ case "${1:-}" in
   -h|--help|help|"") usage;;
   *) die "unknown mode: $1";;
 esac
+}
+
+main "$@"
