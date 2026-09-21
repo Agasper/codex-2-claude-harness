@@ -1,6 +1,6 @@
 {
   "name": "claude-bridge",
-  "version": "1.1.2+codex.20260921071201",
+  "version": "1.1.2",
   "description": "Delegate Claude Code and UltraCode tasks from Codex with live progress, cancellation, limits, reviews and resumable sessions",
   "author": {
     "name": "Agasper"
@@ -9,8 +9,8 @@
   "interface": {
     "displayName": "Claude Bridge",
     "shortDescription": "Claude Code and UltraCode tasks with progress and control",
-    "longDescription": "Delegate scoped tasks to Claude Code, select UltraCode workflows, inspect live events, and stop or resume runs with explicit limits. Local development extension of the Agasper harness.",
-    "developerName": "Agasper (local development build)",
+    "longDescription": "Delegate scoped tasks to Claude Code, select UltraCode workflows, inspect live events, and stop or resume runs with explicit limits.",
+    "developerName": "Agasper",
     "category": "Developer Tools",
     "capabilities": [
       "Read",
