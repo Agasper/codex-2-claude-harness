@@ -29,7 +29,7 @@ codex plugin add claude-bridge@codex-2-claude-harness
 
 Then run `plugins/claude-bridge/scripts/install.sh` to check prerequisites and put `claudectl` on your `PATH`.
 
-Requires Claude Code (`claude`) already installed and signed in, plus Python 3, Git and Bash.
+Requires Claude Code (`claude`) already installed and signed in, Python 3.9+, Git and Bash on macOS/Linux. UltraCode with forwarded subagent events requires Claude Code 2.1.211 or later (2.1.219+ for nested subagent events).
 
 ## claudectl
 
@@ -37,11 +37,44 @@ Requires Claude Code (`claude`) already installed and signed in, plus Python 3, 
 claudectl run     --cwd DIR (--prompt TEXT | --prompt-file F) [--model M]
 claudectl review  --cwd DIR [--base REF] [--prompt TEXT] [--model M]
 claudectl resume  --id ID  (--prompt TEXT | --prompt-file F)
-claudectl status  [--id ID]
+claudectl status  [--id ID] [--json]
+claudectl watch   [--id ID] [--seconds 60] [--interval 2]
 claudectl result  [--id ID]
 claudectl cancel  [--id ID]
-claudectl list
+claudectl list    [--json]
 ```
+
+### UltraCode and per-run controls
+
+```bash
+claudectl run --cwd /path/to/project --prompt-file task.md \
+  --model opus --effort ultracode --background \
+  --timeout 1800 --idle-timeout 300 --max-budget-usd 5 --max-turns 80
+
+claudectl status --id RUN_ID
+claudectl watch --id RUN_ID --seconds 60
+claudectl status --id RUN_ID --json
+claudectl cancel --id RUN_ID
+claudectl resume --id RUN_ID --prompt-file follow-up.md --background
+```
+
+`--effort` accepts `low`, `medium`, `high`, `xhigh`, `max`, or `ultracode`. UltraCode requests `xhigh` reasoning and enables Claude's dynamic workflow orchestration. The flag is passed to Claude; just writing "ultracode" in a `-p` prompt does not enable the keyword trigger. Models, account settings and organization caps can limit availability. See [Claude model configuration](https://code.claude.com/docs/en/model-config#adjust-effort-level) and [dynamic workflows](https://code.claude.com/docs/en/workflows).
+
+All limits are opt-in. `--timeout` measures wall-clock seconds; `--idle-timeout` measures seconds without valid stream events, which is not proof of a stuck model. `--max-budget-usd` and `--max-turns` are forwarded to Claude Code. The dollar cap uses Claude's API cost accounting, not a promise about subscription billing. The wall-clock timer begins when the worker launches Claude. An explicit `--effort` takes precedence over an inherited `CLAUDE_CODE_EFFORT_LEVEL` for this child only; organization restrictions remain in force.
+
+`resume` inherits the requested model, effort, limits, and review/implementation mode unless overridden. Limits restart for each follow-up. A session lock prevents two runs from resuming the same Claude session concurrently. Active runs must finish or be cancelled before a follow-up. No live prompt injection or pause is implemented.
+
+### Observability and stopping
+
+The supervisor records Claude's stream incrementally. `status` and `watch` show the requested model/effort, actual model reported by Claude, elapsed time, recent tools, observed `Workflow` calls, and task progress/usage when Claude emits it. UltraCode forwards subagent messages with `--forward-subagent-text`. These are observed events, not a percentage-complete estimate or a guarantee that every internal workflow stage is exposed. Requested UltraCode is not proof that a workflow ran: check observed `Workflow` events.
+
+`watch` observes for 60 seconds by default, then exits without cancelling the task; Ctrl-C only stops the watcher. Repeat it to observe again. `status --json` and `list --json` provide machine-readable snapshots. Full events remain in `run.jsonl`; `progress.json` is the latest compact snapshot, and `result.json` holds the final parent result.
+
+`cancel` sends a request to the supervising worker. The worker terminates Claude's dedicated POSIX process group (TERM, then KILL after a grace period), retains the session ID and records `CANCELLED`. Time limits use the same path and record `TIMED_OUT`. This covers child processes that stay in that group, not independently detached or remote work. Files already changed remain on disk; cancellation is not rollback. A resume needs Claude's persisted transcript; cancelling before Claude has created it may require a new run.
+
+Old run logs remain readable. Cancellation of a still-active legacy run without a supervisor is refused rather than signalling a potentially stale PID. `SILENT` is a warning after three minutes without events, configurable with `CLAUDE_STALL_SECONDS`; it does not stop a run unless an idle timeout was explicitly supplied.
+
+The Bash entry point remains compatible with PATH symlinks. Its Python standard-library supervisor replaces the old shell polling loop so cancellation, process groups, deadlines, atomic status writes, and incremental event parsing have one owner.
 
 ### Background runs
 
@@ -75,17 +108,19 @@ This matters most for `resume`, which inherits the working directory of the run 
 
 ## What Claude is allowed to do
 
-Claude Code has no OS-level sandbox — permissions are enforced inside its own harness, so the model of safety differs from Codex's:
+The bridge uses Claude Code's permission modes and does not add an OS-level sandbox:
 
-- **`run`** uses `--permission-mode auto`: Claude edits files and runs commands, judging each one. Access is limited to the project directory via `--add-dir`.
-- **`review`** adds `--restricted`, which removes Bash and the other command-running tools outright. A reviewer has no business executing anything.
+- **`run`** uses `--permission-mode auto`: Claude edits files and runs commands, judging each one. `--add-dir` grants access; it is not an OS sandbox.
+- **`review`** adds `--restricted`, which removes command-running tools. It still uses `acceptEdits`, so prompts must explicitly forbid fixes and the resulting diff must be checked. Provide a prepared diff in the prompt file: `--base` describes the comparison but does not collect the diff. UltraCode is rejected in this restricted mode because workflows need command tools; a scoped analysis task can use `run --effort ultracode` with its normal permissions.
 - Before every `run`, `claudectl` creates a git tag `claude-baseline-<timestamp>` as a rollback point and as the base for the acceptance diff.
-- Claude can delete anything inside the project, exactly as any agent with edit access can. The tag is what makes that recoverable.
+- Claude can delete anything inside the project, exactly as any agent with edit access can. The tag saves only HEAD, not dirty or untracked files. Preserve those separately before launching a writer.
 
 ## Development
 
 ```bash
-tests/smoke.sh   # checks that need no Claude call and cost nothing
+tests/smoke.sh
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+# Both suites are offline: integration tests substitute fake claude/codex binaries.
 ```
 
 ## License
