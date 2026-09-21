@@ -1,71 +1,68 @@
 ---
 name: claude-bridge
-description: Delegating work to Claude Code through claudectl — the only sanctioned way to launch it. Use when a task should go to Claude, for Claude-run reviews, for checking on a run in progress ("how is it doing", "is it stuck"), for accepting the result, and for follow-ups.
+description: Delegate implementation, analysis, or review to Claude Code through claudectl, including UltraCode workflows. Use for explicit Claude delegation, monitoring progress, cancelling long runs, accepting results, or continuing a Claude session.
 ---
 
 # Claude Code through claudectl
 
-This skill covers handing a task to Claude Code and taking the result back. It does not decide **which** work goes to Claude — that split belongs in the user's own instructions (`AGENTS.md`), and different people set it up differently. What is fixed here is the mechanics: Claude is launched **only** through `claudectl`.
+Use `claudectl` for Claude task launches rather than assembling `claude -p` commands. It supplies the permission mode, stdin prompt, stream format, process supervision, and completion notification. Choose which work to delegate from the user's instructions; installing this skill does not authorize automatic delegation of every task.
 
-## Hard rule: never invoke `claude` directly
+## Launch
 
-Hand-assembled invocations fail in ways that are hard to read. Real traps already hit:
-
-- `--add-dir` is variadic and swallows a trailing prompt argument, so the run dies with `Input must be provided either through stdin or as a prompt argument`. The prompt must go through stdin.
-- `--permission-mode acceptEdits` allows file edits but still blocks commands, so a task that must run its own tests ends with `This command requires approval` and a half-finished job. Tasks need `auto`.
-- `--output-format stream-json` needs `--verbose`, otherwise there is no event stream to watch.
-- Claude Code refuses to work under `/tmp` — `Path is outside allowed working directories` — regardless of `--add-dir`.
-
-All of that is handled inside `claudectl`. If a needed mode seems to be missing, extend `claudectl` rather than assembling a `claude` call by hand.
-
-## Modes
-
-```
-claudectl run     --cwd DIR (--prompt TEXT | --prompt-file F) [--model M] [--background]
-claudectl review  --cwd DIR [--base REF] [--prompt TEXT] [--model M] [--background]
-claudectl resume  --id ID (--prompt TEXT | --prompt-file F) [--background]
-claudectl status  [--id ID]
-claudectl result  [--id ID]
-claudectl cancel  [--id ID]
-claudectl list
+```bash
+claudectl run --cwd /path/to/project --prompt-file task.md --background
+claudectl run --cwd /path/to/project --prompt-file task.md --model opus --effort ultracode --background
+claudectl review --cwd /path/to/project --prompt-file review.md --effort high --background
 ```
 
-Without `--id`, commands act on the newest run started by this Codex thread, falling back to the newest run of the current project, and refuse outright when neither matches. Do not pass a working directory to those commands — there is no flag for it, and the binding is automatic on purpose.
+`--effort` accepts `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`. Preserve the user's model selection; omit `--model` to use their Claude default. UltraCode forwards the real `--effort ultracode` flag and subagent events. Writing "ultracode" only in a print-mode prompt is insufficient. The requested mode can be constrained by the model or organization settings; do not claim a workflow ran unless the event log shows it.
 
-## How to launch
+Optional controls on `run`, `review`, and `resume`:
 
-By default `run`, `review` and `resume` block until the work is finished. A review of a large change or a substantial task takes minutes, and blocking means you sit idle for all of them.
+- `--timeout SECONDS`: wall-clock limit for this attempt.
+- `--idle-timeout SECONDS`: stop after no valid stream events for this interval. Silence can also mean a slow request.
+- `--max-budget-usd AMOUNT`, `--max-turns COUNT`: Claude's own limits. Report dollar figures as CLI accounting, not verified subscription charges.
 
-Add **`--background`** in that case. The command returns at once with the run id, the work continues detached, and when it ends a message is queued back into this Codex session through `codex queue`, so you learn the outcome without polling. Use it for anything you expect to run longer than a minute; keep the blocking form for short tasks where the answer is the next thing you need.
+Use concrete scope, allowed files and acceptance checks in the prompt. Pass a user-supplied task document unchanged. Existing authorization for a concrete task remains valid; ask only when material scope or authority is missing.
 
-Never detach a run yourself with `nohup`, `&` or `disown`. That produces the same waiting but without the reporting: no completion message, no visible status. `--background` detaches too, but the run keeps reporting for itself.
+Before write tasks, inspect dirty/untracked files and avoid overlap with other writers. The automatic baseline tag records HEAD only, not those files. Use a suitable local snapshot or isolated checkout if needed. The working directory cannot be under `/tmp`; prompt files can.
 
-While a run is in flight, answer "how is it doing" with `claudectl status` — it reports the state, the time since the last event, and the latest steps, including any permission denials. Do not guess.
+`review` disables command tools but still exposes file edits. Supply the prepared diff and relevant new files, forbid fixes in the prompt, and check the final diff. `--base` alone does not collect a diff. UltraCode is rejected in `review` because workflows need command tools. When the user explicitly requests an UltraCode analysis, use `run` with a narrow analysis-only prompt and disclose its normal implementation permissions when relevant.
 
-## States and what to do about them
+## Monitor and stop
 
-| State | Meaning | Action |
-|---|---|---|
-| RUNNING | events are coming in | nothing; report the latest step |
-| SILENT | no events for over three minutes | say so plainly, show the last step, offer `claudectl cancel` |
-| DONE | finished normally | move to acceptance |
-| FAILED | non-zero exit, or a result that is not `success` | show the tail of `err.log` |
-| TRUNCATED | no result event at all | Claude died mid-run; accept what exists, then `claudectl resume` |
+```bash
+claudectl status --id RUN_ID
+claudectl status --id RUN_ID --json
+claudectl watch --id RUN_ID --seconds 45 --interval 3
+claudectl result --id RUN_ID
+claudectl cancel --id RUN_ID
+claudectl list --json
+```
 
-DONE does not mean "did the work": Claude can finish normally while reporting that it could not proceed — a denied command, a missing dependency. Always check its claims against the actual changes.
+Use `--background` for work expected to take more than a minute. Keep the returned ID. Never improvise `nohup`, `&`, or `disown`. Completion is queued to the originating Codex task when `CODEX_THREAD_ID` is present; check `meta.json`/`console.log` if delivery fails.
 
-## Discipline around a run
+`status`/`watch` report the actual model from Claude's initialization, requested effort, elapsed time, tools, observed Workflow calls, and task lifecycle/usage events when available. The full stream is in `~/.codex/claude-runs/ID/run.jsonl`; `progress.json` is a compact snapshot. This is event visibility, not percentage complete or exhaustive workflow internals. Do not infer completion from silence.
 
-1. **The spec.** If the user supplied a document, pass `--prompt-file` pointing at it and do not paraphrase. If the spec came out of the conversation, write it up, show it to the user and wait for confirmation, then launch.
-2. **A clean tree.** If the project has uncommitted changes, say so before launching: otherwise acceptance cannot separate Claude's work from what was already there. The rollback tag is created by `claudectl` itself.
-3. **Acceptance.** Run `claudectl result`, then `git diff` against the tag. If Claude claims the tests pass, find the corresponding command in the run log. Its word alone is not evidence.
-4. **Cost is reported.** Every run prints what it cost in dollars; pass that on when the user asks about spend.
-5. **Review is never automatic.** After acceptance, report the outcome and remind the user about review, asking who should do it — you or `claudectl review`. A "no" closes the topic immediately.
+`watch` ends after 60 seconds by default and leaves the run active; use a window of at most 60 seconds when calling from Codex so the user still receives updates. Ctrl-C in the watcher does not cancel Claude.
 
-## Do not
+- `RUNNING` / `STARTING`: the worker owns the run.
+- `SILENT`: no stream events for over three minutes by default; inspect the last activity.
+- `CANCELLING`: stop requested, awaiting worker confirmation.
+- `CANCELLED`: the worker completed cancellation.
+- `TIMED_OUT`: the worker stopped at a supplied time limit.
+- `DONE`: the parent result reports success; acceptance is still required.
+- `FAILED` / `TRUNCATED`: inspect `err.log`, `stop_reason`, and partial changes.
 
-- Invoke `claude` directly or improvise flags.
-- Detach a run with `nohup` / `&` / `disown` — use `--background` instead.
-- Commit or push Claude's work without being asked.
-- Delegate on your own initiative when the user's instructions do not call for it.
-- Report "done" without looking at the changes.
+Cancellation terminates the local Claude process group and retains its session ID. Independently detached processes and remote work are outside that group. Already written files are not rolled back. If cancellation cannot be confirmed, say so; do not report it as stopped.
+
+## Follow up and accept
+
+```bash
+claudectl resume --id RUN_ID --prompt-file follow-up.md --background
+claudectl resume --id RUN_ID --prompt 'Narrow follow-up' --effort high --model opus --background
+```
+
+`resume` inherits explicit model, effort, limits, and run/review permissions unless overridden. Limits restart per attempt. Wait for completion or cancel the active attempt first; a session lock also prevents concurrent resumes. Cancellation preserves the ID, but if Claude never created a transcript, start a new run instead. There is no live prompt injection or pause command.
+
+Read `result`, inspect the real diff, and verify claimed tests from logs. `DONE` alone does not prove the requested work was accomplished. Obtain review, commit, or push only when the user's instructions call for it.

@@ -18,6 +18,11 @@ else
   bad "claude not found — install Claude Code: https://claude.com/claude-code"
 fi
 
+if command -v python3 >/dev/null 2>&1; then
+  python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
+    && good "Python 3.9+" || bad "Python 3.9 or later is required"
+fi
+
 say ""
 say "Installing claudectl:"
 mkdir -p "$BIN_DIR"
